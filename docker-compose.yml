@@ -6,8 +6,18 @@ services:
       - .env
     environment:
       EULA: "TRUE"
-      TYPE: "${MC_TYPE:-PAPER}"
+      TYPE: "${MC_TYPE:-MODRINTH}"
       VERSION: "${MC_VERSION:-1.21.1}"
+
+      # --- Modrinth modpack ---
+      # Public listing URL once published, e.g.:
+      #   https://modrinth.com/modpack/your-pack-slug
+      # or a specific version, to avoid picking up unexpected updates:
+      #   https://modrinth.com/modpack/your-pack-slug/version/1.0.0
+      # For local testing before publishing, point this at a file instead:
+      #   /data/modpacks/yourpack.mrpack  (must sit under ./data/modpacks/)
+      MODRINTH_MODPACK: "${MODRINTH_MODPACK:?MODRINTH_MODPACK must be set in .env}"
+      MODRINTH_LOADER: "${MODRINTH_LOADER:-fabric}"
 
       # --- Memory ---
       # Java HEAP only. Non-heap (metaspace, thread stacks, Netty buffers, GC
@@ -17,8 +27,8 @@ services:
 
       # --- Performance tuning ---
       USE_AIKAR_FLAGS: "TRUE"
-      VIEW_DISTANCE: "8"
-      SIMULATION_DISTANCE: "8"
+      VIEW_DISTANCE: "6"
+      SIMULATION_DISTANCE: "6"
       MAX_PLAYERS: "10"
 
       # --- Autopause ---
