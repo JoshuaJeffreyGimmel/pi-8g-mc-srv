@@ -1,0 +1,14 @@
+# Secrets
+.env
+
+# World data, server jars, logs, plugin configs — all runtime state
+data/
+
+# Backups
+backups/
+*.tgz
+*.tar.gz
+
+# OS noise
+.DS_Store
+Thumbs.db

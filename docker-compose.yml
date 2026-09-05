@@ -1,0 +1,54 @@
+services:
+  mc:
+    image: itzg/minecraft-server
+    container_name: mc
+    env_file:
+      - .env
+    environment:
+      EULA: "TRUE"
+      TYPE: "${MC_TYPE:-PAPER}"
+      VERSION: "${MC_VERSION:-1.21.1}"
+
+      # --- Memory ---
+      # Java HEAP only. Non-heap (metaspace, thread stacks, Netty buffers, GC
+      # structures) adds roughly 25% on top of this. On an 8GB Pi, keep this at
+      # 4-5G so the OS, Docker and Tailscale still have room.
+      MEMORY: "${MC_MEMORY:-4G}"
+
+      # --- Performance tuning ---
+      USE_AIKAR_FLAGS: "TRUE"
+      VIEW_DISTANCE: "8"
+      SIMULATION_DISTANCE: "8"
+      MAX_PLAYERS: "10"
+
+      # --- Autopause ---
+      # Freezes the JVM when nobody is online, resumes on connect.
+      # MAX_TICK_TIME=-1 disables the server Watchdog, which would otherwise
+      # see the resume as a hung tick and force-restart the server.
+      ENABLE_AUTOPAUSE: "TRUE"
+      MAX_TICK_TIME: "-1"
+      AUTOPAUSE_TIMEOUT_EST: "600"
+      AUTOPAUSE_KNOCK_INTERFACE: "eth0"
+
+      # --- Admin / access ---
+      ENABLE_WHITELIST: "TRUE"
+      ENABLE_RCON: "TRUE"
+      RCON_PASSWORD: "${RCON_PASSWORD:?RCON_PASSWORD must be set in .env}"
+
+      # --- Shutdown behaviour ---
+      # Announce delay must stay comfortably below stop_grace_period below,
+      # or Docker hard-kills the server mid-save (exit code 137).
+      STOP_SERVER_ANNOUNCE_DELAY: "60"
+
+      TZ: "${TZ:-Europe/Zurich}"
+    ports:
+      - "25565:25565"
+    volumes:
+      - ./data:/data
+    restart: unless-stopped
+    stop_grace_period: 90s
+    deploy:
+      resources:
+        limits:
+          # Leave headroom for the OS, Docker and the Tailscale daemon.
+          cpus: "3.5"
