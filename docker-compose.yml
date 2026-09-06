@@ -21,14 +21,22 @@ services:
       #   https://modrinth.com/modpack/your-pack-slug
       # or a specific version, to avoid picking up unexpected updates:
       #   https://modrinth.com/modpack/your-pack-slug/version/1.0.0
-      # For local testing before publishing, point this at a file instead:
-      #   /data/modpacks/yourpack.mrpack  (must sit under ./data/modpacks/)
+      # For a local pack, point this at a container path ending in .mrpack —
+      # the extension is how the image detects a local file. `./mc pack
+      # <file.mrpack>` sets this up for you:
+      #   /modpacks/yourpack.mrpack
       #
       # VERSION and MODRINTH_LOADER above/below are only used to resolve which
       # pack build to install when this is a bare project URL. With a pinned
       # /version/ URL the pack itself decides, and they are ignored.
       MODRINTH_MODPACK: "${MODRINTH_MODPACK:?MODRINTH_MODPACK must be set in .env}"
       MODRINTH_LOADER: "${MODRINTH_LOADER:-fabric}"
+
+      # Re-install the pack even when the installer sees no version change.
+      # Rebuilding a local .mrpack under the same filename looks unchanged to
+      # it, so edits are silently ignored without this. Leave FALSE for a
+      # published pack; `./mc pack` turns it on when you install a local one.
+      MODRINTH_FORCE_SYNCHRONIZE: "${MC_PACK_FORCE_SYNC:-FALSE}"
 
       # --- Memory ---
       # Java HEAP only. Non-heap (metaspace, thread stacks, Netty buffers, GC
@@ -98,6 +106,10 @@ services:
 
     volumes:
       - ./data:/data
+      # Local .mrpack files. Read-only so the server cannot mutate the source
+      # pack, and deliberately outside ./data — the troubleshooting steps in
+      # the README include `rm -rf data`, which would take the pack with it.
+      - ./modpacks:/modpacks:ro
     restart: unless-stopped
     stop_grace_period: 90s
 

@@ -160,6 +160,8 @@ cd minecraft-pi
 | Who's online | `./mc players` |
 | Add to whitelist | `./mc whitelist <player>` |
 | Remove from whitelist | `./mc unwhitelist <player>` |
+| List local modpacks | `./mc pack` |
+| Install a local modpack | `./mc pack <file.mrpack>` |
 | Back up the world | `./mc backup` |
 | Shell in container | `./mc shell` |
 
@@ -301,14 +303,55 @@ mv data data.old
 
 Expect a much longer first boot while the new pack downloads.
 
-### Testing a pack before publishing it
+### Using a local `.mrpack` file
 
-Drop the `.mrpack` under `./data/modpacks/` on the host and point at the
-container path — `file://` URLs do not work:
+For a pack you are building yourself, or one you have not published:
+
+```bash
+./mc pack ~/Downloads/yourpack.mrpack   # install and select it
+./mc restart
+```
+
+That copies the file into `./modpacks/`, points `MODRINTH_MODPACK` at its
+container path, and sets `MC_PACK_FORCE_SYNC=TRUE`. It refuses anything that
+is not a real `.mrpack`, and prints what the pack declares:
 
 ```
-MODRINTH_MODPACK=/data/modpacks/yourpack.mrpack
+Copied yourpack.mrpack into ./modpacks/
+  pack:      Your Pack
+  minecraft: 1.21.1
+  loader:    fabric
 ```
+
+If those disagree with `MC_VERSION` or `MODRINTH_LOADER` in `.env` you get a
+warning, which is worth heeding — a version mismatch otherwise surfaces as a
+confusing failure several minutes into startup.
+
+To see what is installed and which pack is live:
+
+```bash
+./mc pack
+
+Packs in ./modpacks:
+  * yourpack.mrpack (active)
+    older-pack.mrpack
+```
+
+Switch between packs already present by name, without re-copying:
+
+```bash
+./mc pack older-pack.mrpack
+```
+
+**Iterating on a pack.** Rebuild the `.mrpack`, then re-run `./mc pack` with the
+new file and restart. `MC_PACK_FORCE_SYNC` exists because a rebuilt pack keeps
+its filename and version, so the installer would otherwise conclude nothing had
+changed and skip your edits. Set it back to `FALSE` in `.env` once you move to a
+published pack, so ordinary restarts stop re-syncing the whole mods tree.
+
+`./modpacks/` is mounted read-only at `/modpacks`, and sits outside `./data/` on
+purpose — the `rm -rf data` recovery step below would otherwise delete the pack
+along with the world. The `.mrpack` files themselves are gitignored.
 
 ---
 

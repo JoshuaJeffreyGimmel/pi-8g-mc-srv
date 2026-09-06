@@ -1,8 +1,15 @@
 # Secrets
 .env
+# Temp files written while updating .env, and any local variants — these can
+# contain RCON_PASSWORD. Does not match the tracked env.example.
+.env.*
 
 # World data, server jars, logs, plugin configs — all runtime state
 data/
+
+# Local modpack files: binary and often hundreds of MB. The directory itself
+# is tracked (via .gitkeep) so the read-only bind mount has something to bind.
+modpacks/*.mrpack
 
 # Backups
 backups/
