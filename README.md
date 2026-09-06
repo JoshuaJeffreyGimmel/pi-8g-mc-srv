@@ -180,7 +180,13 @@ configs, datapacks) lives in `./data/` on the host. Edit directly, then restart.
 ## Backups
 
 `./mc backup` flushes the world via RCON before archiving, so the tarball is
-consistent rather than a snapshot of a half-written region file.
+consistent rather than a snapshot of a half-written region file. If the flush
+fails it aborts rather than writing a plausible-looking but torn archive.
+
+The archive covers `world*`, `config/`, and the ops/whitelist/ban JSON — state
+that cannot be regenerated. The mods tree, loader and jars are excluded, since
+the modpack re-downloads those and they would otherwise dominate seven days of
+retention.
 
 Automate it:
 
@@ -190,8 +196,16 @@ crontab -e
 0 4 * * * /home/joshua/minecraft-pi/scripts/backup.sh >> /home/joshua/minecraft-pi/backups/backup.log 2>&1
 ```
 
-Backups older than 7 days are pruned automatically (`KEEP_DAYS` in the script).
-`backups/` is gitignored — copy them off the Pi periodically if the world matters.
+**Autopause and cron interact.** At 04:00 nobody is online, so the JVM is
+suspended and cannot answer RCON. The script detects that and skips the flush —
+a paused server has already written the world out. It also bounds every RCON
+call with `timeout`, so a wedged server produces a failed job rather than a
+cron process hanging until the next one starts on top of it.
+
+Backups older than 7 days are pruned automatically (`KEEP_DAYS` in the script,
+overridable in the environment). `backups/` is gitignored — copy them off the Pi
+periodically, since a backup on the same disk as the world does not survive the
+failure you are most likely to have.
 
 ---
 
