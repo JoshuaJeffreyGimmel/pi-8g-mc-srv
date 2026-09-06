@@ -1,7 +1,8 @@
 # Minecraft Server — Raspberry Pi 5
 
-Paper (or NeoForge) Minecraft server running in Docker on a Raspberry Pi 5 (8GB,
-active cooler, NVMe SSD), reachable over Tailscale instead of port forwarding.
+Fabric Minecraft server running a Modrinth modpack in Docker on a Raspberry Pi 5
+(8GB, active cooler, NVMe SSD), reachable over Tailscale instead of port
+forwarding.
 
 Deliberately minimal: no web panel, no extra containers. Admin is CLI-only over
 SSH, which keeps RAM free for the JVM.
@@ -28,8 +29,8 @@ sudo tailscale up
 git clone <your-repo-url> minecraft-pi
 cd minecraft-pi
 
-cp .env.example .env
-nano .env            # set RCON_PASSWORD at minimum
+cp env.example .env
+nano .env            # set RCON_PASSWORD and MODRINTH_MODPACK at minimum
 
 chmod +x mc scripts/backup.sh
 ```
@@ -41,7 +42,9 @@ chmod +x mc scripts/backup.sh
 ./mc logs            # wait for: Done (XX.XXXs)! For help, type "help"
 ```
 
-First boot downloads the server jar and generates the world. **Let it finish.**
+First boot downloads the modpack and every mod it depends on, installs the
+Fabric loader, then generates the world. On a Pi this takes a while.
+**Let it finish.**
 Interrupting world generation leaves a truncated `level.dat` and the server will
 crash-loop on every subsequent start with `No key dimensions in MapLike[{}]`.
 If that happens, see Troubleshooting below.
@@ -191,13 +194,14 @@ image auto-upgrades on restart, which will break plugins and mods.
 
 ## Expected capacity
 
-Rough figures for a Pi 5 (8GB, SSD, active cooling), view/simulation distance 8:
+Rough figures for a Pi 5 (8GB, SSD, active cooling) at the view/simulation
+distance of 6 this template ships with:
 
 | Setup | Realistic players |
 |---|---|
 | Paper, vanilla gameplay | 5–10 comfortably |
 | Paper, light plugins | 5–8 |
-| NeoForge, ~30–50 mod curated pack | 2–4 |
+| Fabric/NeoForge, ~30–50 mod curated pack | 2–4 |
 | Large kitchen-sink pack (ATM-scale) | not viable — wants 8–12G heap alone |
 
 CPU saturates before RAM does. Watch with `docker stats` — sustained ~400%
@@ -206,26 +210,46 @@ more than adding heap.
 
 ---
 
-## Switching to mods
+## Changing the modpack
 
-Mods pin the Minecraft version, so choose the pack first and set `VERSION` to
-match — not the other way around.
+The pack dictates the Minecraft version and the loader, not the other way
+around. Pick the pack first, then make `MC_VERSION` and `MODRINTH_LOADER` match
+what its Modrinth page lists.
 
 In `.env`:
 
 ```
-MC_TYPE=NEOFORGE
+MODRINTH_MODPACK=https://modrinth.com/modpack/your-pack-slug/version/1.0.0
+MODRINTH_LOADER=fabric
 MC_VERSION=1.21.1
 ```
 
-Optionally pin the loader in `docker-compose.yml`:
+**Pin the version URL.** Pointing `MODRINTH_MODPACK` at the bare project page
+means the pack resolves to whatever is newest at boot, so a restart can upgrade
+mods under an existing world. The `/version/<n>` form makes upgrades something
+you choose. When you do use a bare project URL, `MC_VERSION` and
+`MODRINTH_LOADER` are what the image uses to pick a compatible pack version;
+with a pinned version URL they are ignored for resolution.
 
-```yaml
-NEOFORGE_VERSION: "21.1.72"
+Changing packs generally needs a fresh world:
+
+```bash
+./mc backup                  # keep the old one regardless
+./mc down
+mv data data.old
+./mc up
 ```
 
-Then `./mc down`, move `data/` aside (mods usually need a fresh world), and
-`./mc up`. Expect a much longer first boot.
+Expect a much longer first boot while the new pack downloads.
+
+### Testing a pack before publishing it
+
+Drop the `.mrpack` under `./data/modpacks/` on the host and point at the
+container path — `file://` URLs do not work:
+
+```
+MODRINTH_MODPACK=/data/modpacks/yourpack.mrpack
+```
 
 ---
 
