@@ -6,6 +6,7 @@ cd "$(dirname "$0")"
 
 CONTAINER=mc
 PACK_DIR="./modpacks"
+BACKUP_DIR="./backups"
 ENV_FILE="./.env"
 
 usage() {
@@ -24,7 +25,11 @@ Usage: ./mc <command> [args]
   unwhitelist <name>     remove a player
   pack                   list local .mrpack files, marking the active one
   pack <file.mrpack>     install a local .mrpack and point .env at it
-  backup                 tar the world to ./backups
+  backup [label]         tar the world to ./backups; a label exempts it
+                         from the automatic prune
+  backups                list existing backups
+  schedule               show whether automatic backups are installed
+  schedule apply         make cron match AUTOMATIC_BACKUPS in .env
   shell                  shell inside the container
 USAGE
 }
@@ -36,10 +41,24 @@ require_running() {
   fi
 }
 
-active_pack() {
+# Read one key from .env without sourcing it — .env holds RCON_PASSWORD, and
+# sourcing would execute whatever happens to be in the file.
+# cut -f2- so that values containing '=' (URLs) survive intact.
+env_get() {
   [ -f "$ENV_FILE" ] || return 0
-  # cut -f2- so that URLs containing '=' survive intact.
-  grep -m1 '^MODRINTH_MODPACK=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true
+  grep -m1 "^$1=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true
+}
+
+# TRUE/true/yes/1 all count as on; anything else, including unset, is off.
+env_is_true() {
+  case "$(printf '%s' "$(env_get "$1")" | tr '[:upper:]' '[:lower:]')" in
+    true|yes|1) return 0 ;;
+    *) return 1 ;;
+  esac
+}
+
+active_pack() {
+  env_get MODRINTH_MODPACK
 }
 
 # Rewrite one KEY=value in .env, in place, without sed substitution — a pack
@@ -102,8 +121,8 @@ pack_info() {
   [ -n "$loader" ] && echo "  loader:    $loader"
 
   local cur_ver cur_loader
-  cur_ver="$(grep -m1 '^MC_VERSION=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
-  cur_loader="$(grep -m1 '^MODRINTH_LOADER=' "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true)"
+  cur_ver="$(env_get MC_VERSION)"
+  cur_loader="$(env_get MODRINTH_LOADER)"
   if [ -n "$mcver" ] && [ -n "$cur_ver" ] && [ "$mcver" != "$cur_ver" ]; then
     echo "  WARNING: .env has MC_VERSION=$cur_ver but the pack declares $mcver." >&2
   fi
@@ -180,10 +199,114 @@ pack_use() {
   echo "Switching packs usually needs a fresh world — see README, 'Changing the modpack'."
 }
 
+list_backups() {
+  local f found=false count=0
+  if [ ! -d "$BACKUP_DIR" ]; then
+    echo "No backups yet. Create one with: ./mc backup"
+    return 0
+  fi
+  # Newest first. The embedded timestamp sorts chronologically, so a reverse
+  # name sort is also a reverse time sort.
+  while IFS= read -r f; do
+    [ -e "$f" ] || continue
+    found=true
+    count=$((count + 1))
+    printf '  %s  %6s  %s\n' \
+      "$(date -r "$f" '+%Y-%m-%d %H:%M')" \
+      "$(du -h "$f" | cut -f1)" \
+      "$(basename "$f")"
+  done < <(printf '%s\n' "$BACKUP_DIR"/world-*.tgz | sort -r)
+  if ! $found; then
+    echo "No backups yet. Create one with: ./mc backup"
+    return 0
+  fi
+  echo
+  echo "  $count archive(s), $(du -sh "$BACKUP_DIR" | cut -f1) total in $BACKUP_DIR"
+  echo "  Unlabelled archives are pruned after BACKUP_KEEP_DAYS; labelled ones are kept."
+}
+
+# The cron entry is wrapped in markers so it can be rewritten or removed
+# without disturbing any other crontab entries the user has.
+CRON_BEGIN="# >>> minecraft-pi automatic backups >>>"
+CRON_END="# <<< minecraft-pi automatic backups <<<"
+
+cron_installed() {
+  command -v crontab >/dev/null 2>&1 || return 1
+  crontab -l 2>/dev/null | grep -qF "$CRON_BEGIN"
+}
+
+schedule_status() {
+  local schedule
+  schedule="$(env_get BACKUP_SCHEDULE)"; schedule="${schedule:-0 4 * * *}"
+  if env_is_true AUTOMATIC_BACKUPS; then
+    echo ".env wants:  AUTOMATIC_BACKUPS=TRUE   schedule: $schedule"
+  else
+    echo ".env wants:  AUTOMATIC_BACKUPS=FALSE"
+  fi
+  if cron_installed; then
+    echo "crontab has: installed"
+    crontab -l 2>/dev/null | awk -v b="$CRON_BEGIN" -v e="$CRON_END" \
+      '$0==b{s=1;next} $0==e{s=0;next} s{print "  " $0}'
+  elif command -v crontab >/dev/null 2>&1; then
+    echo "crontab has: nothing"
+  else
+    echo "crontab has: n/a (no crontab command on this host)"
+  fi
+  echo
+  if env_is_true AUTOMATIC_BACKUPS && ! cron_installed; then
+    echo "Out of sync. Run: ./mc schedule apply"
+  elif ! env_is_true AUTOMATIC_BACKUPS && cron_installed; then
+    echo "Out of sync. Run: ./mc schedule apply"
+  else
+    echo "In sync."
+  fi
+}
+
+schedule_apply() {
+  if ! command -v crontab >/dev/null 2>&1; then
+    echo "ERROR: no crontab command on this host; cannot manage automatic backups." >&2
+    exit 1
+  fi
+  local schedule tmp
+  schedule="$(env_get BACKUP_SCHEDULE)"; schedule="${schedule:-0 4 * * *}"
+  tmp="$(mktemp)"
+  trap 'rm -f "$tmp"' RETURN
+
+  # Start from the current crontab minus any block we previously installed.
+  crontab -l 2>/dev/null | awk -v b="$CRON_BEGIN" -v e="$CRON_END" \
+    '$0==b{s=1;next} $0==e{s=0;next} !s{print}' > "$tmp" || true
+
+  if env_is_true AUTOMATIC_BACKUPS; then
+    # cron runs with a bare environment and no working directory, so every
+    # path here has to be absolute.
+    mkdir -p "$PWD/backups"
+    {
+      echo "$CRON_BEGIN"
+      echo "$schedule $PWD/scripts/backup.sh >> $PWD/backups/backup.log 2>&1"
+      echo "$CRON_END"
+    } >> "$tmp"
+    crontab "$tmp"
+    echo "Automatic backups enabled: $schedule"
+    echo "Log: $PWD/backups/backup.log"
+  else
+    crontab "$tmp"
+    echo "Automatic backups disabled; managed cron entry removed."
+  fi
+  trap - RETURN
+}
+
 case "${1:-}" in
   up)
     docker compose up -d
     echo "Started. Follow startup with: ./mc logs"
+    # AUTOMATIC_BACKUPS is a setting in .env, but cron lives on the host and
+    # nothing applies it implicitly. Say so, rather than let someone believe
+    # backups are running because the variable is set.
+    if env_is_true AUTOMATIC_BACKUPS && ! cron_installed; then
+      echo
+      echo "NOTE: .env sets AUTOMATIC_BACKUPS=TRUE but no cron entry is installed." >&2
+      echo "      Backups are NOT running. Install it with: ./mc schedule apply" >&2
+    fi
     ;;
   down)
     # -t must exceed STOP_SERVER_ANNOUNCE_DELAY so the world finishes saving.
@@ -226,7 +349,16 @@ case "${1:-}" in
     if [ -n "${2:-}" ]; then pack_use "$2"; else pack_list; fi
     ;;
   backup)
-    ./scripts/backup.sh
+    shift
+    # An optional label marks the archive as deliberate and exempts it from
+    # the automatic prune: ./mc backup before-1.22-upgrade
+    ./scripts/backup.sh "$@"
+    ;;
+  backups)
+    list_backups
+    ;;
+  schedule)
+    if [ "${2:-}" = "apply" ]; then schedule_apply; else schedule_status; fi
     ;;
   shell)
     require_running

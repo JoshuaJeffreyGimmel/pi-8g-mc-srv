@@ -163,6 +163,10 @@ cd minecraft-pi
 | List local modpacks | `./mc pack` |
 | Install a local modpack | `./mc pack <file.mrpack>` |
 | Back up the world | `./mc backup` |
+| Labelled backup (never pruned) | `./mc backup <label>` |
+| List backups | `./mc backups` |
+| Automatic backup status | `./mc schedule` |
+| Apply `AUTOMATIC_BACKUPS` | `./mc schedule apply` |
 | Shell in container | `./mc shell` |
 
 Inside `./mc console`, the usual server commands work: `kick`, `ban`, `ban-ip`,
@@ -181,22 +185,70 @@ configs, datapacks) lives in `./data/` on the host. Edit directly, then restart.
 
 ## Backups
 
-`./mc backup` flushes the world via RCON before archiving, so the tarball is
+Every backup flushes the world via RCON before archiving, so the tarball is
 consistent rather than a snapshot of a half-written region file. If the flush
 fails it aborts rather than writing a plausible-looking but torn archive.
 
 The archive covers `world*`, `config/`, and the ops/whitelist/ban JSON — state
 that cannot be regenerated. The mods tree, loader and jars are excluded, since
-the modpack re-downloads those and they would otherwise dominate seven days of
-retention.
+the modpack re-downloads those and they would otherwise dominate the retention
+window.
 
-Automate it:
+### Manual backups
 
 ```bash
-crontab -e
-# Daily at 04:00
-0 4 * * * /home/joshua/minecraft-pi/scripts/backup.sh >> /home/joshua/minecraft-pi/backups/backup.log 2>&1
+./mc backup                          # timestamped snapshot
+./mc backup before-1.22-upgrade      # labelled: kept indefinitely
+./mc backups                         # list what exists, newest first
 ```
+
+Take a labelled one before anything risky — changing packs, editing
+`server.properties` by hand, upgrading Minecraft. The label is what protects it:
+unlabelled archives are pruned on a timer, labelled ones never are, so a
+snapshot you deliberately took is still there in a month.
+
+```
+  2026-09-06 04:00    412M  world-20260906-040000.tgz
+  2026-09-05 18:22    410M  world-20260905-182200-before-1.22-upgrade.tgz
+
+  2 archive(s), 822M total in ./backups
+```
+
+### Automatic backups
+
+Off by default. Turn them on in `.env`:
+
+```
+AUTOMATIC_BACKUPS=TRUE
+BACKUP_SCHEDULE=0 4 * * *
+BACKUP_KEEP_DAYS=7
+```
+
+then apply it:
+
+```bash
+./mc schedule apply
+```
+
+**Setting the variable alone does nothing.** Cron lives on the host, outside
+Docker, so nothing picks the change up implicitly — `./mc schedule apply` is
+what installs or removes the entry. To guard against believing backups are
+running when they are not, `./mc schedule` reports whether `.env` and cron
+agree, and `./mc up` warns when the variable is `TRUE` with nothing installed:
+
+```bash
+./mc schedule
+
+.env wants:  AUTOMATIC_BACKUPS=TRUE   schedule: 0 4 * * *
+crontab has: installed
+  0 4 * * * /home/joshua/minecraft-pi/scripts/backup.sh >> ...
+
+In sync.
+```
+
+The cron entry is written inside a marked block, so applying it repeatedly will
+not duplicate it and disabling it leaves your other crontab entries alone.
+Output goes to `backups/backup.log`.
 
 **Autopause and cron interact.** At 04:00 nobody is online, so the JVM is
 suspended and cannot answer RCON. The script detects that and skips the flush —
@@ -204,10 +256,31 @@ a paused server has already written the world out. It also bounds every RCON
 call with `timeout`, so a wedged server produces a failed job rather than a
 cron process hanging until the next one starts on top of it.
 
-Backups older than 7 days are pruned automatically (`KEEP_DAYS` in the script,
-overridable in the environment). `backups/` is gitignored — copy them off the Pi
-periodically, since a backup on the same disk as the world does not survive the
-failure you are most likely to have.
+### Restoring
+
+`backups/` is gitignored, and lives on the same disk as the world — copy the
+archives off the Pi periodically, since a backup that shares a disk does not
+survive the failure you are most likely to have.
+
+To restore, stop the server first; restoring underneath a running server gives
+you a world half-overwritten by whatever it had in memory.
+
+```bash
+./mc backups                      # pick one
+./mc down
+
+mv data/world data/world.broken   # keep the bad one until you are sure
+tar -xzf backups/world-20260905-182200-before-1.22-upgrade.tgz -C data/
+
+./mc up
+./mc logs
+```
+
+The archive holds `world/` and the config files at the paths they came from, so
+it extracts straight into `data/`. Once the world is confirmed good, remove
+`data/world.broken`. If the server will not start at all, check that the
+restored files are owned by `MC_UID`:`MC_GID` — extracting as `root` is a common
+cause.
 
 ---
 
@@ -383,3 +456,9 @@ Otherwise restore from `backups/`.
 
 **Debugging a failing start** — run `docker compose up` without `-d` so it fails
 once in the foreground instead of looping.
+
+---
+
+## License
+
+MIT — see [LICENSE](LICENSE).

@@ -14,10 +14,27 @@ cd "$(dirname "$0")/.."
 CONTAINER=mc
 BACKUP_DIR="./backups"
 DATA_DIR="./data"
-KEEP_DAYS="${KEEP_DAYS:-7}"
+ENV_FILE="./.env"
 RCON_TIMEOUT="${RCON_TIMEOUT:-30}"
 STAMP="$(date +%Y%m%d-%H%M%S)"
-ARCHIVE="$BACKUP_DIR/world-$STAMP.tgz"
+
+# Read one key out of .env without sourcing it — cron does not load .env, and
+# sourcing a file that holds RCON_PASSWORD would execute whatever is in it.
+env_get() {
+  [ -f "$ENV_FILE" ] || return 0
+  grep -m1 "^$1=" "$ENV_FILE" 2>/dev/null | cut -d= -f2- || true
+}
+
+KEEP_DAYS="${KEEP_DAYS:-$(env_get BACKUP_KEEP_DAYS)}"
+KEEP_DAYS="${KEEP_DAYS:-7}"
+
+# An optional label marks a backup as deliberate: "before-1.22-upgrade".
+# Labelled archives are kept indefinitely; see the prune step at the end.
+LABEL="${1:-}"
+if [ -n "$LABEL" ]; then
+  LABEL="$(printf '%s' "$LABEL" | tr -c 'A-Za-z0-9._-' '-' | sed 's/--*/-/g; s/^-//; s/-$//')"
+fi
+ARCHIVE="$BACKUP_DIR/world-$STAMP${LABEL:+-$LABEL}.tgz"
 
 mkdir -p "$BACKUP_DIR"
 
@@ -131,7 +148,12 @@ if ! tar -tzf "$ARCHIVE" >/dev/null 2>&1; then
   exit 1
 fi
 
-echo "Pruning backups older than $KEEP_DAYS days..."
-find "$BACKUP_DIR" -name 'world-*.tgz' -type f -mtime "+$KEEP_DAYS" -delete
+# Prune only the unlabelled, automatic archives (world-YYYYMMDD-HHMMSS.tgz).
+# A labelled backup was taken deliberately, so it is kept until you remove it.
+echo "Pruning unlabelled backups older than $KEEP_DAYS days..."
+find "$BACKUP_DIR" -maxdepth 1 -type f \
+  -regextype posix-extended \
+  -regex '.*/world-[0-9]{8}-[0-9]{6}\.tgz' \
+  -mtime "+$KEEP_DAYS" -delete
 
 echo "Done: $ARCHIVE ($(du -h "$ARCHIVE" | cut -f1))"
