@@ -49,11 +49,18 @@ Interrupting world generation leaves a truncated `level.dat` and the server will
 crash-loop on every subsequent start with `No key dimensions in MapLike[{}]`.
 If that happens, see Troubleshooting below.
 
-### 4. Whitelist yourself
+### 4. Add other players
+
+`MC_OPS` and `MC_WHITELIST` in `.env` already covered you on first boot. Anyone
+else:
 
 ```bash
-./mc whitelist YourMinecraftName
+./mc whitelist TheirMinecraftName
 ```
+
+Players added this way live in `data/whitelist.json` rather than in `.env`.
+`EXISTING_WHITELIST_FILE: MERGE` in the compose file is what stops a restart
+from resetting the list back to whatever `MC_WHITELIST` says.
 
 ---
 
@@ -109,6 +116,25 @@ then in **Access Controls**:
 ```
 
 Verify from a shared account that port 22 is refused and 25565 works.
+
+**These ACLs only govern tailnet peers.** Docker publishes the game port on the
+host separately, and by default that is `0.0.0.0` — reachable from every device
+on the Pi's local network, and from the internet if anything upstream forwards
+to it. To close that off, set the Pi's Tailscale address in `.env`:
+
+```bash
+tailscale ip -4                  # e.g. 100.101.102.103
+```
+
+```
+MC_BIND_ADDR=100.101.102.103
+```
+
+Then `./mc restart` and confirm the listener is no longer wildcard-bound:
+
+```bash
+ss -ltnp | grep 25565            # want 100.101.102.103:25565, not 0.0.0.0:25565
+```
 
 ---
 
@@ -183,12 +209,31 @@ interprets the resume as a hung tick and force-restarts the server.
 While paused, RCON is unresponsive too — the whole Java process is suspended.
 That is expected, not a fault.
 
-**Version pinning.** `VERSION` is pinned deliberately. Left at `LATEST`, the
-image auto-upgrades on restart, which will break plugins and mods.
+**Memory limit.** `MC_MEMORY` is the heap; `MC_MEMORY_LIMIT` is the hard ceiling
+Docker enforces on the container. Keep the ceiling above heap + ~25%, or the JVM
+gets OOM-killed in normal operation. The point of having one at all is failure
+containment: without it, a leaking mod drags the whole Pi into swap and you lose
+SSH before you lose the container.
+
+**Version pinning, two kinds.** `MC_VERSION` pins Minecraft. The `image:` tag
+pins the JVM, and matters just as much — the bare `itzg/minecraft-server` name
+means `latest`, which currently resolves to the same digest as `java25`. A
+`docker compose pull` would then swap a 1.21.1 Fabric pack onto a JVM far newer
+than its mods were built against. Hence `stable-java21`.
 
 **CPU limit.** `cpus: "3.5"` of 4 cores leaves headroom for the OS, Docker and
 `tailscaled` so the JVM cannot starve them under load. Confirm it applied with
 `docker inspect mc | grep -i nanocpus`.
+
+**Logs.** Capped at 3 × 10MB via the `logging:` block. Docker's default
+`json-file` driver has no limit, and autopause means the server almost never
+restarts to roll its own logs — so both would otherwise grow until the disk
+filled.
+
+**File ownership.** The image runs as `MC_UID`:`MC_GID` (1000:1000 by default)
+and `./data` is a bind mount, so those must match the host user that owns the
+directory. Check with `id -u` and `id -g`; symptoms of a mismatch are permission
+errors writing the world on first boot.
 
 ---
 

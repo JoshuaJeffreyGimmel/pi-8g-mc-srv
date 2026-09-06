@@ -1,9 +1,16 @@
 services:
   mc:
-    image: itzg/minecraft-server
+    # Pinned deliberately. The bare `itzg/minecraft-server` name resolves to
+    # `latest`, which currently points at the same digest as `java25` — a JVM
+    # far newer than most 1.21.1 Fabric mods are built against. Check the
+    # pack's required Java version before bumping this.
+    image: itzg/minecraft-server:stable-java21
     container_name: mc
-    env_file:
-      - .env
+
+    # No `env_file:` here on purpose. Compose already reads ./.env for the
+    # ${...} interpolation below — that is what the `:?` guards rely on.
+    # Listing it again as env_file would additionally inject the MC_* helper
+    # variables into the container, where the image has no use for them.
     environment:
       EULA: "TRUE"
       TYPE: "${MC_TYPE:-MODRINTH}"
@@ -16,6 +23,10 @@ services:
       #   https://modrinth.com/modpack/your-pack-slug/version/1.0.0
       # For local testing before publishing, point this at a file instead:
       #   /data/modpacks/yourpack.mrpack  (must sit under ./data/modpacks/)
+      #
+      # VERSION and MODRINTH_LOADER above/below are only used to resolve which
+      # pack build to install when this is a bare project URL. With a pinned
+      # /version/ URL the pack itself decides, and they are ignored.
       MODRINTH_MODPACK: "${MODRINTH_MODPACK:?MODRINTH_MODPACK must be set in .env}"
       MODRINTH_LOADER: "${MODRINTH_LOADER:-fabric}"
 
@@ -31,19 +42,44 @@ services:
       SIMULATION_DISTANCE: "6"
       MAX_PLAYERS: "10"
 
+      # Most modpacks ship something that grants flight (elytra, jetpacks,
+      # creative-mode items). Without this the server kicks those players with
+      # "Flying is not enabled on this server."
+      ALLOW_FLIGHT: "${MC_ALLOW_FLIGHT:-TRUE}"
+
       # --- Autopause ---
       # Freezes the JVM when nobody is online, resumes on connect.
       # MAX_TICK_TIME=-1 disables the server Watchdog, which would otherwise
       # see the resume as a hung tick and force-restart the server.
+      #
+      # AUTOPAUSE_KNOCK_INTERFACE is the interface *inside* the container, so
+      # eth0 is correct for the bridge networking used here. It would need to
+      # become the host interface only under network_mode: host.
       ENABLE_AUTOPAUSE: "TRUE"
       MAX_TICK_TIME: "-1"
       AUTOPAUSE_TIMEOUT_EST: "600"
       AUTOPAUSE_KNOCK_INTERFACE: "eth0"
 
       # --- Admin / access ---
+      # Without seeding these, a whitelisted server admits nobody on first boot
+      # and grants nobody operator rights — including you.
       ENABLE_WHITELIST: "TRUE"
+      ENFORCE_WHITELIST: "TRUE"
+      OPS: "${MC_OPS:-}"
+      WHITELIST: "${MC_WHITELIST:-}"
+      # MERGE rather than the image default of SYNC_FILE_MERGE_LIST: players
+      # added in-game or via `./mc whitelist` exist only in the JSON files, not
+      # in the variables above, and must survive a restart.
+      EXISTING_OPS_FILE: "MERGE"
+      EXISTING_WHITELIST_FILE: "MERGE"
+
       ENABLE_RCON: "TRUE"
       RCON_PASSWORD: "${RCON_PASSWORD:?RCON_PASSWORD must be set in .env}"
+
+      # Ownership of the bind-mounted ./data. Must match the host user that
+      # owns the directory, or the server cannot write its world.
+      UID: "${MC_UID:-1000}"
+      GID: "${MC_GID:-1000}"
 
       # --- Shutdown behaviour ---
       # Announce delay must stay comfortably below stop_grace_period below,
@@ -51,14 +87,34 @@ services:
       STOP_SERVER_ANNOUNCE_DELAY: "60"
 
       TZ: "${TZ:-Europe/Zurich}"
+
     ports:
-      - "25565:25565"
+      # Binding to the Tailscale address keeps the server off the local
+      # network. The Tailscale ACLs in the README govern tailnet peers only —
+      # publishing on 0.0.0.0 additionally exposes 25565 to every device on
+      # the LAN, and to the internet behind any upstream port forward.
+      # Set MC_BIND_ADDR=<tailscale ip> in .env.
+      - "${MC_BIND_ADDR:-0.0.0.0}:25565:25565"
+
     volumes:
       - ./data:/data
     restart: unless-stopped
     stop_grace_period: 90s
+
+    # Docker's default json-file driver grows without bound, and autopause
+    # means the server almost never restarts to roll its own logs.
+    logging:
+      driver: "json-file"
+      options:
+        max-size: "10m"
+        max-file: "3"
+
     deploy:
       resources:
         limits:
           # Leave headroom for the OS, Docker and the Tailscale daemon.
           cpus: "3.5"
+          # Roughly the 4G heap plus its ~25% non-heap overhead, plus margin.
+          # Without a ceiling, a leaking mod drives the whole Pi into swap and
+          # takes SSH down with it; with one, only the container dies.
+          memory: "${MC_MEMORY_LIMIT:-6G}"
